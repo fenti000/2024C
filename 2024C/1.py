@@ -13,7 +13,7 @@ def load_data():
         planting_2023 = pd.read_csv("003.csv", encoding='utf-8')
         economic_data = pd.read_csv("004.csv", encoding='utf-8')
         expected_sales = pd.read_excel("ExpectedSales.xlsx")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError: 
         land_info = pd.read_csv("001.csv", encoding='gbk')
         crop_info = pd.read_csv("002.csv", encoding='gbk')
         planting_2023 = pd.read_csv("003.csv", encoding='gbk')
@@ -91,22 +91,26 @@ def find_best_planting(plot_name, year, history, economic_data, land_info, scena
     plot_type = plot_info.iloc[0]['地块类型']
     area = plot_info.iloc[0]['地块面积/亩']
 
-    # 获取历史种植记录
-    last_year = history.get(year - 1, {}).get(plot_name, [])
-    year_before = history.get(year - 2, {}).get(plot_name, [])
-
+    # 获取历史种植记录 - 修改为按季次存储
+    last_year_season1 = history.get(year - 1, {}).get(plot_name, {}).get('第一季', [])
+    last_year_season2 = history.get(year - 1, {}).get(plot_name, {}).get('第二季', [])
+    current_year_season1 = history.get(year, {}).get(plot_name, {}).get('第一季', [])
+    
     # 检查豆类约束（三年内至少种植一次豆类）
-    need_bean = not (any(c in BEAN_CROPS for c in last_year + year_before))
+    # 获取前两年的所有季次种植记录
+    year_before_season1 = history.get(year - 2, {}).get(plot_name, {}).get('第一季', [])
+    year_before_season2 = history.get(year - 2, {}).get(plot_name, {}).get('第二季', [])
+    need_bean = not (any(c in BEAN_CROPS for c in last_year_season1 + last_year_season2 + year_before_season1 + year_before_season2))
 
     # 分地块类型处理
     if plot_type in ['平旱地', '梯田', '山坡地']:
-        return _handle_single_season(plot_name, plot_type, area, last_year, need_bean, economic_data, scenario)
+        return _handle_single_season(plot_name, plot_type, area, last_year_season2, need_bean, economic_data, scenario)
     elif plot_type == '水浇地':
-        return _handle_water_land(plot_name, area, last_year, need_bean, economic_data, scenario)
-    elif plot_type == '普通大棚':
-        return _handle_greenhouse(plot_name, area, last_year, need_bean, economic_data, is_smart=False, scenario=scenario)
+        return _handle_water_land(plot_name, area, last_year_season2, current_year_season1, need_bean, economic_data, scenario)
+    elif plot_type == '普通大棚 ':  # 注意：实际数据中有空格
+        return _handle_greenhouse(plot_name, area, last_year_season2, current_year_season1, need_bean, economic_data, is_smart=False, scenario=scenario)
     elif plot_type == '智慧大棚':
-        return _handle_greenhouse(plot_name, area, last_year, need_bean, economic_data, is_smart=True, scenario=scenario)
+        return _handle_greenhouse(plot_name, area, last_year_season2, current_year_season1, need_bean, economic_data, is_smart=True, scenario=scenario)
     return {'plan': [], 'profit': 0}
 
 def calculate_profit(crop_row, area, scenario, demand):
@@ -125,13 +129,14 @@ def calculate_profit(crop_row, area, scenario, demand):
     
     return profit * area
 
-def _handle_single_season(plot_name, plot_type, area, last_year, need_bean, economic_data, scenario):
+def _handle_single_season(plot_name, plot_type, area, last_year_season2, need_bean, economic_data, scenario):
     candidates = economic_data[
         (economic_data['地块类型'] == plot_type) &
         (economic_data['种植季次'] == '单季')
     ].copy()
 
-    candidates = candidates[~candidates['作物名称'].isin(last_year)]
+    # 检查重茬种植：不能与上一季次（去年第二季）种植相同作物
+    candidates = candidates[~candidates['作物名称'].isin(last_year_season2)]
     if need_bean:
         candidates = candidates[candidates['作物名称'].isin(BEAN_CROPS)]
 
@@ -145,31 +150,34 @@ def _handle_single_season(plot_name, plot_type, area, last_year, need_bean, econ
         }
     return {'plan': [], 'profit': 0}
 
-def _handle_water_land(plot_name, area, last_year, need_bean, economic_data, scenario):
+def _handle_water_land(plot_name, area, last_year_season2, current_year_season1, need_bean, economic_data, scenario):
     # 选项1：单季水稻
     rice = economic_data[
         (economic_data['作物名称'] == '水稻') &
         (economic_data['种植季次'] == '单季')
     ]
-    if not rice.empty and '水稻' not in last_year:
+    # 检查重茬种植：不能与上一季次（去年第二季）种植相同作物
+    if not rice.empty and '水稻' not in last_year_season2:
         demand = CROP_DEMANDS.get('水稻', 1000)
         rice_profit = calculate_profit(rice.iloc[0], area, scenario, demand)
     else:
         rice_profit = -np.inf
 
     # 选项2：两季蔬菜
+    # 第一季：不能与上一季次（去年第二季）种植相同作物
     veg1 = economic_data[
         (economic_data['种植季次'] == '第一季') &
         (~economic_data['作物名称'].isin(SEASON2_VEG)) &
-        (~economic_data['作物名称'].isin(last_year))
+        (~economic_data['作物名称'].isin(last_year_season2))
     ]
     if need_bean:
         veg1 = veg1[veg1['作物名称'].isin(BEAN_CROPS)]
 
+    # 第二季：不能与上一季次（今年第一季）种植相同作物
     veg2 = economic_data[
         (economic_data['种植季次'] == '第二季') &
         (economic_data['作物名称'].isin(SEASON2_VEG)) &
-        (~economic_data['作物名称'].isin(last_year))
+        (~economic_data['作物名称'].isin(current_year_season1))
     ]
 
     if not veg1.empty and not veg2.empty:
@@ -195,10 +203,11 @@ def _handle_water_land(plot_name, area, last_year, need_bean, economic_data, sce
             'profit': veg_profit
         }
 
-def _handle_greenhouse(plot_name, area, last_year, need_bean, economic_data, is_smart, scenario):
+def _handle_greenhouse(plot_name, area, last_year_season2, current_year_season1, need_bean, economic_data, is_smart, scenario):
+    # 第一季：不能与上一季次（去年第二季）种植相同作物
     season1_candidates = economic_data[
         (economic_data['种植季次'] == '第一季') &
-        (~economic_data['作物名称'].isin(last_year))
+        (~economic_data['作物名称'].isin(last_year_season2))
     ]
     if not is_smart:
         season1_candidates = season1_candidates[~season1_candidates['作物名称'].isin(SEASON2_VEG)]
@@ -206,15 +215,35 @@ def _handle_greenhouse(plot_name, area, last_year, need_bean, economic_data, is_
         season1_candidates = season1_candidates[season1_candidates['作物名称'].isin(BEAN_CROPS)]
 
     if is_smart:
+        # 第二季：不能与上一季次（今年第一季）种植相同作物
         season2_candidates = economic_data[
             (economic_data['种植季次'] == '第二季') &
-            (~economic_data['作物名称'].isin(last_year))
+            (~economic_data['作物名称'].isin(current_year_season1))
         ]
     else:
         season2_candidates = economic_data[
             (economic_data['作物名称'].isin(FUNGI_CROPS)) &
             (economic_data['种植季次'] == '第二季')
         ]
+    
+    # 添加调试信息
+    if plot_name.startswith('E'):  # 普通大棚地块以E开头
+        print(f"调试 - {plot_name}:")
+        print(f"  第一季候选作物数量: {len(season1_candidates)}")
+        print(f"  第二季候选作物数量: {len(season2_candidates)}")
+        print(f"  去年第二季种植: {last_year_season2}")
+        print(f"  今年第一季种植: {current_year_season1}")
+        if not season1_candidates.empty:
+            print(f"  第一季候选作物: {season1_candidates['作物名称'].tolist()}")
+        if not season2_candidates.empty:
+            print(f"  第二季候选作物: {season2_candidates['作物名称'].tolist()}")
+        else:
+            print(f"  第二季候选作物为空，检查菌类作物:")
+            fungi_data = economic_data[economic_data['作物名称'].isin(FUNGI_CROPS)]
+            print(f"    菌类作物数据: {fungi_data[['作物名称', '种植季次']].to_dict('records')}")
+            # 检查所有第二季作物
+            all_season2 = economic_data[economic_data['种植季次'] == '第二季']
+            print(f"    所有第二季作物: {all_season2['作物名称'].tolist()}")
 
     if not season1_candidates.empty and not season2_candidates.empty:
         best_s1 = season1_candidates.nlargest(1, '每亩净收益').iloc[0]
@@ -238,9 +267,17 @@ def load_2023_data(planting_2023):
     for _, row in planting_2023.iterrows():
         plot_name = row['种植地块']
         crop_name = row['作物名称']
+        season = row['种植季次']
+        
+        # 将单季作物标记为第一季
+        if season == '单季':
+            season = '第一季'
+            
         if plot_name not in history_2023:
-            history_2023[plot_name] = []
-        history_2023[plot_name].append(crop_name)
+            history_2023[plot_name] = {}
+        if season not in history_2023[plot_name]:
+            history_2023[plot_name][season] = []
+        history_2023[plot_name][season].append(crop_name)
     return history_2023
 
 def create_result_template(year_plans, year, scenario, land_info, crop_info):
@@ -308,9 +345,18 @@ def solve_problem_1_scenario(economic_data, planting_2023, land_info, crop_info,
         history[year] = {}
         for p in year_plans:
             plot_name = p['地块名称']
+            crop_name = p['作物名称']
+            season = p['季次']
+            
+            # 将单季作物标记为第一季
+            if season == '单季':
+                season = '第一季'
+                
             if plot_name not in history[year]:
-                history[year][plot_name] = []
-            history[year][plot_name].append(p['作物名称'])
+                history[year][plot_name] = {}
+            if season not in history[year][plot_name]:
+                history[year][plot_name][season] = []
+            history[year][plot_name][season].append(crop_name)
         
         all_plans.extend(year_plans)
         total_profit += year_profit
